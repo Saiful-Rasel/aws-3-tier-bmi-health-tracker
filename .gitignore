@@ -1,0 +1,69 @@
+# ── Dependencies ─────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+
+# ── Environment / secrets ────────────────────────────────────
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
+
+# ── Build output ─────────────────────────────────────────────
+dist/
+build/
+frontend/dist/
+
+# ── Logs ─────────────────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── Runtime ──────────────────────────────────────────────────
+pids/
+*.pid
+*.seed
+
+# ── OS files ─────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE / editor ─────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── GitHub Copilot workspace instructions (local only) ───────
+.github/copilot-instructions.md
+
+# ── Infrastructure state (environment-specific, not for VCS) ─
+infra_state.json
+setup_infra.log
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+.next/
+
+# Logs
+*.log
+logs/
+
+# Private keys and certificates
+*.pem
+*.key
+
+# OS files
+.DS_Store

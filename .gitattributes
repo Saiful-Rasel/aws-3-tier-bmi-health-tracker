@@ -1,0 +1,13 @@
+# Force Unix line endings for shell scripts regardless of developer OS
+*.sh        text eol=lf
+
+# Text files — let Git normalize
+*.js        text eol=lf
+*.jsx       text eol=lf
+*.json      text eol=lf
+*.css       text eol=lf
+*.html      text eol=lf
+*.sql       text eol=lf
+*.md        text eol=lf
+*.env*      text eol=lf
+.gitignore  text eol=lf
