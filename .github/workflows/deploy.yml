@@ -1,92 +1,117 @@
 
-name: 3-Tier App CI/CD Pipeline
+name: 3-Tier Web App CI/CD to Private Server
 
 on:
   push:
-    branches:
-      - main
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
 
-  workflow_dispatch:
-
-# Minimum permissions for this workflow.
 permissions:
   contents: read
 
+# Prevent multiple deployments from running simultaneously.
+concurrency:
+  group: bmi-production-deploy
+  cancel-in-progress: false
+
 jobs:
-  # ------------------------------------------
-  # JOB 1: Backend validation
-  # ------------------------------------------
-  backend-ci:
-    name: Backend CI
-    runs-on: self-hosted
-
-    defaults:
-      run:
-        working-directory: backend
+  # ==========================================
+  # CI: Continuous Integration
+  # ==========================================
+  ci:
+    name: CI - Build and Test
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: backend/package-lock.json
-
-      - name: Install Dependencies
-        run: npm ci
-
-      - name: Validate Backend
-        run: node --check src/server.js
-
-  # ------------------------------------------
-  # JOB 2: Frontend build
-  # ------------------------------------------
-  frontend-ci:
-    name: Frontend CI
-    runs-on: self-hosted
-
-    defaults:
-      run:
-        working-directory: frontend
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
+          node-version: 20
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install Dependencies
+      - name: Install Frontend Dependencies
+        working-directory: frontend
         run: npm ci
 
+      - name: Run Lint
+        working-directory: frontend
+        run: npm run lint --if-present
+
+      - name: Run Tests
+        working-directory: frontend
+        run: npm test --if-present
+
       - name: Build Frontend
+        working-directory: frontend
         run: npm run build
 
-      - name: Verify Dist
-        run: test -f dist/index.html
+      # Keep the production build for the deployment job.
+      - name: Upload Frontend Build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/dist/
+          if-no-files-found: error
+          retention-days: 1
 
-  # ------------------------------------------
-  # JOB 3: Deployment
-  # ------------------------------------------
+  # ==========================================
+  # CD: Continuous Deployment
+  # ==========================================
   deploy:
-    name: Deploy Application
-    needs:
-      - backend-ci
-      - frontend-ci
+    name: CD - Deploy to Private Server
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
-    runs-on: self-hosted
+    runs-on: [self-hosted, linux, x64]
 
     steps:
-      - name: Deployment Placeholder
+      - name: Download Frontend Build
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: dist/
+
+      - name: Deploy to AWS Private Server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PRIVATE_SERVER_IP }}
+          username: ${{ secrets.PRIVATE_SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+
+            echo "Connected to private server"
+
+            # Install NGINX only if it is missing.
+            if ! command -v nginx >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y nginx
+            fi
+
+            sudo systemctl enable --now nginx
+
+            sudo mkdir -p /var/www/bmi-frontend
+            sudo chown -R "$USER":"$USER" /var/www/bmi-frontend
+
+      - name: Copy Build to Private Server
         run: |
-          echo "CI completed successfully"
-          echo "Ready for SSM deployment"
-          echo "Backend: PM2"
-          echo "Frontend: Nginx dist"
+          set -e
+
+          # Copy the CI-generated frontend build to Server B.
+          scp -r dist/. \
+            "${{ secrets.PRIVATE_SERVER_USER }}@${{ secrets.PRIVATE_SERVER_IP }}:/tmp/bmi-frontend/"
+
+          # Move files into the NGINX document root.
+          ssh "${{ secrets.PRIVATE_SERVER_USER }}@${{ secrets.PRIVATE_SERVER_IP }}" \
+            "sudo mkdir -p /var/www/bmi-frontend && \
+             sudo cp -r /tmp/bmi-frontend/. /var/www/bmi-frontend/ && \
+             sudo nginx -t && \
+             sudo systemctl reload nginx"
+
+      - name: Deployment Summary
+        run: echo "Frontend deployment completed successfully."
