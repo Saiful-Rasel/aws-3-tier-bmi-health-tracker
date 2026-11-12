@@ -1,0 +1,23 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SendDeploymentCommandToOnlyPrivateApp",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ssm:ap-south-1::document/AWS-RunShellScript",
+        "arn:aws:ec2:ap-south-1:949502931402:instance/i-0b314863a0ed7a9ce"
+      ]
+    },
+    {
+      "Sid": "ReadCommandExecutionResult",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+
+name: 3-Tier App CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+# Minimum permissions for this workflow.
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------
+  # JOB 1: Backend validation
+  # ------------------------------------------
+  backend-ci:
+    name: Backend CI
+    runs-on: self-hosted
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Validate Backend
+        run: node --check src/server.js
+
+  # ------------------------------------------
+  # JOB 2: Frontend build
+  # ------------------------------------------
+  frontend-ci:
+    name: Frontend CI
+    runs-on: self-hosted
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build Frontend
+        run: npm run build
+
+      - name: Verify Dist
+        run: test -f dist/index.html
+
+  # ------------------------------------------
+  # JOB 3: Deployment
+  # ------------------------------------------
+  deploy:
+    name: Deploy Application
+    needs:
+      - backend-ci
+      - frontend-ci
+
+    runs-on: self-hosted
+
+    steps:
+      - name: Deployment Placeholder
+        run: |
+          echo "CI completed successfully"
+          echo "Ready for SSM deployment"
+          echo "Backend: PM2"
+          echo "Frontend: Nginx dist"
