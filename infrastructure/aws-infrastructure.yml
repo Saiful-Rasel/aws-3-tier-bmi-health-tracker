@@ -1,0 +1,399 @@
+
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >
+  Learning infrastructure for a public GitHub Actions runner
+  and a private 3-tier application server.
+
+Parameters:
+  AdminCidr:
+    Type: String
+    Description: Your public IP with /32, for example 203.0.113.10/32
+
+  AdminPublicKey:
+    Type: String
+    Description: SSH public key for runner and application EC2 access.
+
+  GitHubRepository:
+    Type: String
+    Default: Saiful-Rasel/aws-3-tier-bmi-health-tracker
+
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues:
+      - t3.small
+      - t3.medium
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Resources:
+
+  # --------------------------------------------------
+  # 1. VPC and networking
+  # --------------------------------------------------
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.20.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: bmi-learning-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachInternetGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.20.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: bmi-public-subnet
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.20.11.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: bmi-private-subnet
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachInternetGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  NatEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachInternetGateway
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: bmi-learning-nat
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  # --------------------------------------------------
+  # 2. Security groups
+  # --------------------------------------------------
+
+  RunnerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public runner and reverse proxy.
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # Browser traffic reaches the Nginx reverse proxy.
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+        # Administrative SSH is restricted to your IP.
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AdminCidr
+
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: bmi-runner-sg
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Private application server.
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # Only the runner can SSH into the application server.
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref RunnerSecurityGroup
+
+        # Only the runner reverse proxy can reach application HTTP.
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref RunnerSecurityGroup
+
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: bmi-app-sg
+
+  # --------------------------------------------------
+  # 3. Application EC2 IAM role
+  # --------------------------------------------------
+
+  AppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+  AppInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref AppRole
+
+  # --------------------------------------------------
+  # 4. ECR repositories
+  # --------------------------------------------------
+
+  # --------------------------------------------------
+  # 5. OIDC role for application CI/CD pipeline
+  #----------------------------------------------
+
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: BMI-GitHub-Deploy-Role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepository}:ref:refs/heads/main
+
+      Policies:
+        - PolicyName: PushBMIImagesToECR
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:CompleteLayerUpload
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                Resource:
+                  - !GetAtt BackendRepository.Arn
+                  - !GetAtt FrontendRepository.Arn
+
+  # --------------------------------------------------
+  # 6. Private application EC2
+  # --------------------------------------------------
+
+  AppInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref AppInstanceProfile
+      SubnetId: !Ref PrivateSubnet
+      SecurityGroupIds:
+        - !Ref AppSecurityGroup
+
+      Tags:
+        - Key: Name
+          Value: bmi-private-application
+
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+
+          dnf update -y
+          dnf install -y docker curl unzip
+
+          systemctl enable --now docker
+          usermod -aG docker ec2-user
+
+          # Install AWS CLI v2 for private ECR image pulls.
+          curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip \
+            -o /tmp/awscliv2.zip
+
+          unzip -q /tmp/awscliv2.zip -d /tmp
+          /tmp/aws/install
+
+          # Install a pinned Docker Compose version.
+          mkdir -p /usr/local/lib/docker/cli-plugins
+
+          curl -fsSL \
+            https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64 \
+            -o /usr/local/lib/docker/cli-plugins/docker-compose
+
+          chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+          # Configure SSH access for the runner/admin key.
+          install -d -m 700 -o ec2-user -g ec2-user /home/ec2-user/.ssh
+
+          cat <<'EOF' > /home/ec2-user/.ssh/authorized_keys
+          ${AdminPublicKey}
+          EOF
+
+          chown ec2-user:ec2-user /home/ec2-user/.ssh/authorized_keys
+          chmod 600 /home/ec2-user/.ssh/authorized_keys
+
+          mkdir -p /opt/bmi-app
+          chown ec2-user:ec2-user /opt/bmi-app
+
+  # --------------------------------------------------
+  # 7. Public self-hosted runner EC2
+  # --------------------------------------------------
+
+  RunnerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref RunnerSecurityGroup
+
+      Tags:
+        - Key: Name
+          Value: bmi-self-hosted-runner
+
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+
+          dnf update -y
+          dnf install -y nginx git curl jq tar gzip docker
+
+          systemctl enable --now docker
+          systemctl enable --now nginx
+
+          usermod -aG docker ec2-user
+
+          # Install a reverse proxy to the private application server.
+          cat <<'NGINX' > /etc/nginx/conf.d/bmi-proxy.conf
+          server {
+              listen 80 default_server;
+              server_name _;
+
+              location / {
+                  proxy_pass http://${AppInstance.PrivateIp}:80;
+                  proxy_http_version 1.1;
+
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+          NGINX
+
+          nginx -t
+          systemctl restart nginx
+
+          # Configure SSH access for initial runner setup.
+          install -d -m 700 -o ec2-user -g ec2-user /home/ec2-user/.ssh
+
+          cat <<'EOF' > /home/ec2-user/.ssh/authorized_keys
+          ${AdminPublicKey}
+          EOF
+
+          chown ec2-user:ec2-user /home/ec2-user/.ssh/authorized_keys
+          chmod 600 /home/ec2-user/.ssh/authorized_keys
+
+Outputs:
+
+  VpcId:
+    Value: !Ref VPC
+
+  RunnerInstanceId:
+    Value: !Ref RunnerInstance
+
+  RunnerPublicIP:
+    Value: !GetAtt RunnerInstance.PublicIp
+
+  RunnerPrivateIP:
+    Value: !GetAtt RunnerInstance.PrivateIp
+
+  AppInstanceId:
+    Value: !Ref AppInstance
+
+  AppPrivateIP:
+    Value: !GetAtt AppInstance.PrivateIp
+
+  BackendRepositoryUri:
+    Value: !GetAtt BackendRepository.RepositoryUri
+
+  FrontendRepositoryUri:
+    Value: !GetAtt FrontendRepository.RepositoryUri
+
+  GitHubDeployRoleArn:
+    Value: !GetAtt GitHubDeployRole.Arn
