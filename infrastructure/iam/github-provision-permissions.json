@@ -75,7 +75,8 @@
       "Sid": "ReadLatestAmazonLinuxAmi",
       "Effect": "Allow",
       "Action": [
-        "ssm:GetParameter"
+        "ssm:GetParameter",
+        "ssm:GetParameters"
       ],
       "Resource": "*",
       "Condition": {
