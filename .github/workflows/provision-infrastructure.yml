@@ -1,0 +1,45 @@
+name: Provision AWS Infrastructure
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
+jobs:
+  provision:
+    name: Provision Infrastructure
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PROVISION_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Verify AWS Identity
+        run: aws sts get-caller-identity
+
+      - name: Validate CloudFormation Template
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://infrastructure/aws-infrastructure.yml
+
+      - name: Deploy Infrastructure
+        run: |
+          aws cloudformation deploy \
+            --template-file infrastructure/aws-infrastructure.yml \
+            --stack-name bmi-health-tracker-infrastructure \
+            --parameter-overrides \
+              AdminCidr="${{ vars.ADMIN_CIDR }}" \
+              AdminPublicKey="${{ vars.ADMIN_PUBLIC_KEY }}" \
+              GitHubRepository="Saiful-Rasel/aws-3-tier-bmi-health-tracker" \
+            --capabilities CAPABILITY_NAMED_IAM
